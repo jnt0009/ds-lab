@@ -1,0 +1,14 @@
+# The NSF's shell additions (copied once into a new home; edit freely).
+export EDITOR=nano
+alias ll='ls -lah'
+cd /work 2>/dev/null || true
+cat <<'WELCOME'
+National Science Foundation lab. Projects: /work (git clone here). Data: /data.
+  Positron: R and Python (NSF) consoles · claude: Claude Code · quarto · uv · gcloud
+  New project: nsf-new <name>   (a CLAUDE.md and .gitignore for the lab's conventions)
+WELCOME
+nsf-new() {
+    [ -n "$1" ] || { echo "usage: nsf-new <name>"; return 1; }
+    mkdir -p "/work/$1" && cd "/work/$1" && git init -q 2>/dev/null
+    cp -n /opt/nsf/templates/project/CLAUDE.md /opt/nsf/templates/project/.gitignore . && echo "made /work/$1"
+}

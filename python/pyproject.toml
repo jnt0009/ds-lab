@@ -1,0 +1,21 @@
+# The NSF base image's Python packages (from ML_Ad-hoc's .venv and imports, 2026-11-18, without the Honeylove-only
+# ones). Locked in uv.lock; installed into /opt/venv by the Dockerfile. A project adds its own with `uv add`.
+[project]
+name = "nsf-base"
+version = "0.1.0"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    # data
+    "numpy", "pandas", "polars", "pyarrow", "duckdb", "openpyxl",
+    # models and stats
+    "scipy", "scikit-learn", "statsmodels", "xgboost", "lightgbm", "umap-learn", "hdbscan", "mlxtend",
+    # plots
+    "matplotlib", "seaborn",
+    # plumbing
+    "requests", "python-dotenv", "pyyaml", "google-cloud-storage",
+    # Positron's Python console
+    "ipykernel",
+]
+
+[tool.uv]
+package = false
