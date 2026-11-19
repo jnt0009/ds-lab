@@ -16,7 +16,10 @@ install -m 600 -o "$U" -g "$U" /run/nsf/authorized_keys "/home/$U/.ssh/authorize
 # secrets: the image's /etc/environment, plus the mounted ones, readable by root and the lab user only
 cp /etc/environment.nsf /etc/environment 2>/dev/null || cp /etc/environment /etc/environment.nsf
 if [ -f /run/nsf/secrets.env ]; then
-    grep -E '^[A-Za-z_][A-Za-z0-9_]*=' /run/nsf/secrets.env >> /etc/environment
+    # tr: a file saved on Windows ends its lines in \r\n, and the \r would ride along at the end of every value
+    # (found 2026-11-19: battlestation's ANTHROPIC_API_KEY ended in \r). `|| true`: a file with no KEY= lines (an
+    # empty one, as lab/README.md suggests) must not stop the lab under set -e
+    tr -d '\r' < /run/nsf/secrets.env | { grep -E '^[A-Za-z_][A-Za-z0-9_]*=' || true; } >> /etc/environment
 fi
 chown root:"$U" /etc/environment && chmod 640 /etc/environment
 # who the lab's commits are by: NSF_GIT_NAME / NSF_GIT_EMAIL from the secrets, set once (edit ~/.gitconfig after)
