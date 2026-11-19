@@ -72,6 +72,34 @@ gcloud auth configure-docker us-east1-docker.pkg.dev     # with the personal (ns
 docker pull us-east1-docker.pkg.dev/house-282504/nsf/nsf:latest
 ```
 
+## Jobs in GCP (Cloud Run Jobs)
+
+`nsf-job` (in the image, `docker/nsf-job`) runs one project at one commit: it clones `NSF_REPO` at `NSF_REF`, runs
+`NSF_CMD` in it, and copies what the command wrote to `$NSF_OUT`, plus `job.log` and `run.json` (repo, commit, command,
+image digest, times, exit code), to `$NSF_BUCKET/runs/<run id>/`. Then it posts ✅ or ❌ to Discord's `#lab` and exits
+with the command's code. `examples/hello-job/` is the first one (R and Python, a CSV, a PNG and a JSON).
+
+| | |
+| - | - |
+| Bucket | `gs://house-282504-nsf` (us-east1; uniform access, public access blocked, 7-day soft delete) |
+| Identity | `nsf-runner`: writes that bucket, reads the `lab-webhook` secret; no project roles |
+| Budget | $25 a month on `house-282504`: emails at 50%, 90%, 100% and a forecast 100% |
+| A GCP job | needs JT's OK first (it costs money); the lab's Claude Code is denied `gcloud run jobs create/execute` |
+
+By hand, until `lab run` exists (personal gcloud configuration; pin the image by digest so `run.json` is exact):
+
+```sh
+export CLOUDSDK_ACTIVE_CONFIG_NAME=nsf
+gcloud run jobs create <name> --region=us-east1 --image=us-east1-docker.pkg.dev/house-282504/nsf/nsf@sha256:<digest> \
+  --command=nsf-job --service-account=nsf-runner@house-282504.iam.gserviceaccount.com \
+  --env-vars-file=<env.yaml: NSF_REPO, NSF_REF, NSF_CMD, NSF_BUCKET, NSF_IMAGE> \
+  --set-secrets=DISCORD_WEBHOOK_URL=lab-webhook:latest --cpu=2 --memory=4Gi --task-timeout=30m --max-retries=0
+gcloud run jobs execute <name> --region=us-east1 --wait
+```
+
+⚠️ **A job sees the host's cores, not its own.** On 2 vCPUs, Python's `os.cpu_count()` said 6. Size thread pools from
+the job's CPUs (an `NSF_CPUS` env var, or `nproc`), not from `cpu_count()` / `parallel::detectCores()`.
+
 ## Still to come (see the plan)
 
-battlestation's `lab` on the tailnet; Cloud Run Jobs and a VM in GCP; a `lab run` command.
+A VM in GCP for runs past Cloud Run's limits; a `lab run` command; private repos (a `GH_TOKEN` secret).
