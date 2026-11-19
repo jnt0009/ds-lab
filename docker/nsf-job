@@ -8,6 +8,11 @@
 #   NSF_BUCKET   where results go, e.g. gs://house-282504-nsf (empty: keep them in /work/out)
 #   NSF_IMAGE    the image digest it ran on (set by whoever submits the job; recorded, not used)
 #   DISCORD_WEBHOOK_URL   where the finished message goes (empty: no message)
+#   NSF_RUN_ID   the run's id (default: a UTC timestamp and the Cloud Run execution, or "home")
+#   NSF_DIR      the run's own folder: the clone goes in src/, results in out/ (default /work: Cloud Run's disk is
+#                thrown away after; a home run uses /data/runs/<run id> so it never touches the lab's projects)
+#   NSF_CPUS     the CPUs the run may use, exported for the command to size thread pools by (default: nproc).
+#                os.cpu_count() and parallel::detectCores() report the host's cores, not the job's
 #
 # The command writes whatever it wants kept to $NSF_OUT. That folder, plus job.log (everything the command printed) and
 # run.json (what ran: repo, commit, command, image, times, exit code), is copied to $NSF_BUCKET/runs/<run id>/.
@@ -20,9 +25,11 @@ NSF_BUCKET=${NSF_BUCKET:-}
 NSF_IMAGE=${NSF_IMAGE:-unknown}
 DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
 EXECUTION=${CLOUD_RUN_EXECUTION:-local}
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-${EXECUTION}"
-export NSF_OUT=/work/out NSF_RUN_ID="$RUN_ID"
-SRC=/work/job
+RUN_ID=${NSF_RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-${CLOUD_RUN_EXECUTION:-home}"}
+NSF_DIR=${NSF_DIR:-/work}
+export NSF_OUT="$NSF_DIR/out" NSF_RUN_ID="$RUN_ID" NSF_CPUS=${NSF_CPUS:-$(nproc)}
+SRC="$NSF_DIR/src"
+[ -e "$SRC" ] && { echo "[nsf-job] $SRC already exists: one folder per run" >&2; exit 2; }
 STARTED=$(date -u +%FT%TZ); T0=$(date +%s)
 COMMIT=""; CODE=1; STAGE="setup"
 mkdir -p "$NSF_OUT"
@@ -40,6 +47,7 @@ e = os.environ
 print(json.dumps({
     "run_id": e["NSF_RUN_ID"], "repo": e.get("NSF_REPO", ""), "ref": e.get("NSF_REF", ""), "commit": e["NSF_COMMIT"],
     "command": e.get("NSF_CMD", ""), "image": e.get("NSF_IMAGE", "unknown"), "execution": e["NSF_EXECUTION"],
+    "where": "gcp" if e["NSF_EXECUTION"] != "local" else "home", "cpus": int(e["NSF_CPUS"]),
     "started": e["NSF_STARTED"], "seconds": int(e["NSF_SECS"]), "exit_code": int(e["NSF_CODE"]),
     "failed_at": None if e["NSF_CODE"] == "0" else e["NSF_STAGE"]}, indent=2))
 PY
@@ -61,7 +69,8 @@ ok = e["NSF_CODE"] == "0"
 m, s = divmod(int(e["NSF_SECS"]), 60)
 repo = e.get("NSF_REPO", "").rstrip("/").removesuffix(".git").split("github.com/")[-1]
 lines = [f"{'✅' if ok else '❌'} **NSF job** `{e['NSF_RUN_ID']}` "
-         + ("finished" if ok else f"failed ({e['NSF_STAGE']}, exit {e['NSF_CODE']})") + f" in {m}m {s}s",
+         + ("finished" if ok else f"failed ({e['NSF_STAGE']}, exit {e['NSF_CODE']})") + f" in {m}m {s}s"
+         + (" in GCP" if e["NSF_EXECUTION"] != "local" else " at home"),
          f"`{repo}` @ `{e['NSF_COMMIT'][:12] or e.get('NSF_REF', '') or '?'}`: `{e.get('NSF_CMD', '')[:200]}`",
          f"Results: {e['NSF_RESULTS'] or e['NSF_WHERE']}"]
 if e["NSF_EXECUTION"] != "local":

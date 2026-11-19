@@ -68,9 +68,10 @@ COPY docker/claude-managed-settings.json /etc/claude-code/managed-settings.json
 COPY templates/ /opt/nsf/templates/
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/nsf-job /usr/local/bin/nsf-job
+COPY scripts/lab /usr/local/bin/lab
 COPY tests/smoke.sh /opt/nsf/smoke.sh
 RUN sed -i "s/__NSF_USER__/${NSF_USER}/" /etc/ssh/sshd_config.d/nsf.conf /entrypoint.sh \
-    && chmod +x /entrypoint.sh /opt/nsf/smoke.sh /usr/local/bin/nsf-job
+    && chmod +x /entrypoint.sh /opt/nsf/smoke.sh /usr/local/bin/nsf-job /usr/local/bin/lab
 
 LABEL org.opencontainers.image.source="https://github.com/jnt0009/ds-lab" \
       org.opencontainers.image.title="nsf" \

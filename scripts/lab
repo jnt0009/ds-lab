@@ -1,0 +1,195 @@
+#!/bin/bash
+# lab: run a project at a commit, at home or in GCP, the same way (the NSF's step 5; plan: home-lab docs/ds-lab-plan.md).
+#
+#   lab run [options] [REPO[@REF]] -- COMMAND...     one run; prints its id and where the results go
+#   lab runs [--where home|gcp] [-n N]               recent runs, newest first
+#
+# REPO is owner/name, a GitHub URL, or left out for the git repo you're in (its origin, at HEAD; it must be clean and
+# pushed, since the run clones from GitHub, not from your folder). REF is a branch, tag or full commit; it's resolved
+# to a commit before the run, so the record says exactly what ran. COMMAND runs with bash in the repo's folder and
+# writes what it wants kept to $NSF_OUT; $NSF_CPUS says how many CPUs it has.
+#
+# Options for run:
+#   --where home|gcp   home (default): in battlestation's lab, in the background, results in /data/runs/<run id>/.
+#                      gcp: a Cloud Run Job, results in gs://house-282504-nsf/runs/<run id>/. Costs money: it asks first,
+#                      and only works where the personal gcloud configuration (`nsf`) is logged in, which is the Mac.
+#   --cpu N  --memory M  --timeout T   GCP sizes (default 2, 4Gi, 1h; Cloud Run allows up to 8 CPUs, 32Gi, 24h)
+#   --name NAME        the Cloud Run Job's name (default nsf-<repo>); the job is created or updated, then run
+#   --wait             stay until it finishes (home: in the foreground; gcp: gcloud waits)
+#   --yes              don't ask before a GCP run
+# Either way, a ✅ or ❌ goes to Discord's #lab when the run ends (home: if DISCORD_WEBHOOK_URL is in the lab's secrets).
+set -euo pipefail
+
+PROJECT=house-282504 REGION=us-east1 BUCKET=gs://house-282504-nsf
+IMAGE_REPO=$REGION-docker.pkg.dev/$PROJECT/nsf/nsf
+RUNNER=nsf-runner@$PROJECT.iam.gserviceaccount.com WEBHOOK_SECRET=lab-webhook
+HOME_HOST=${NSF_HOME_HOST:-lab}      # where home runs go when lab is used from outside the lab (the Mac)
+in_lab() { [ -x /usr/local/bin/nsf-job ] && [ -d /opt/nsf ]; }
+die() { echo "lab: $*" >&2; exit 1; }
+usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit "${1:-0}"; }
+
+gcp() {  # gcloud as the personal (nsf) configuration where it exists; the work laptop's default stays untouched
+    if gcloud config configurations describe nsf >/dev/null 2>&1; then CLOUDSDK_ACTIVE_CONFIG_NAME=nsf gcloud "$@"
+    else gcloud "$@"; fi
+}
+
+https_url() {  # owner/name, git@github.com:owner/name(.git), https://github.com/owner/name(.git) -> https://github.com/owner/name
+    local r=$1
+    case "$r" in
+        git@github.com:*) r="https://github.com/${r#git@github.com:}" ;;
+        https://*|http://*) ;;
+        */*) r="https://github.com/$r" ;;
+        *) die "don't know the repo '$1': use owner/name or a URL" ;;
+    esac
+    echo "${r%.git}"
+}
+
+# ---------------------------------------------------------------- lab run
+cmd_run() {
+    local where=home cpu=2 memory=4Gi timeout=1h name="" wait=0 yes=0 target=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --where) where=$2; shift 2 ;;
+            --cpu) cpu=$2; shift 2 ;;
+            --memory) memory=$2; shift 2 ;;
+            --timeout) timeout=$2; shift 2 ;;
+            --name) name=$2; shift 2 ;;
+            --wait) wait=1; shift ;;
+            --yes|-y) yes=1; shift ;;
+            -h|--help) usage ;;
+            --) shift; break ;;
+            -*) die "unknown option $1 (lab run --help)" ;;
+            *) [ -z "$target" ] || die "one repo per run (got '$target' and '$1'); the command goes after --"; target=$1; shift ;;
+        esac
+    done
+    [ $# -gt 0 ] || die "no command: lab run [REPO[@REF]] -- COMMAND..."
+    case "$where" in home|gcp) ;; *) die "--where is home or gcp" ;; esac
+    local cmd="$*" repo ref commit
+
+    if [ -z "$target" ]; then   # the repo you're in, at HEAD
+        git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not in a git repo: name one (owner/name[@ref])"
+        [ -z "$(git status --porcelain --untracked-files=no)" ] || die "uncommitted changes: a run clones from GitHub, so commit and push first"
+        repo=$(https_url "$(git remote get-url origin)")
+        commit=$(git rev-parse HEAD); ref=$commit
+        git fetch --quiet origin 2>/dev/null || true
+        [ -n "$(git branch -r --contains "$commit" 2>/dev/null)" ] || die "HEAD (${commit:0:12}) isn't on GitHub yet: push it first"
+    else
+        repo=$(https_url "${target%@*}")
+        ref=""; [[ "$target" == *@* ]] && ref=${target##*@}
+        if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then commit=$ref
+        else
+            local lookup=${ref:-HEAD} line
+            line=$(git ls-remote "$repo" "$lookup" "refs/heads/$lookup" "refs/tags/$lookup^{}" "refs/tags/$lookup" 2>/dev/null | head -1) \
+                || die "can't reach $repo"
+            [ -n "$line" ] || die "no branch or tag '$lookup' in $repo (a commit must be the full 40-character hash)"
+            commit=${line%%[[:space:]]*}
+        fi
+        ref=${ref:-$commit}
+    fi
+    local short=${repo##*/}
+    echo "lab: ${short} @ ${commit:0:12} (${ref:0:40}) -> $where: $cmd"
+
+    if [ "$where" = home ]; then run_home "$repo" "$ref" "$commit" "$cmd" "$wait"
+    else run_gcp "$repo" "$ref" "$commit" "$cmd" "$cpu" "$memory" "$timeout" "${name:-nsf-$short}" "$wait" "$yes"; fi
+}
+
+run_home() {
+    local repo=$1 ref=$2 commit=$3 cmd=$4 wait=$5
+    local id; id="$(date -u +%Y%m%dT%H%M%SZ)-home-${commit:0:7}-$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"  # two runs in one second differ
+    # the script the lab runs: every value quoted for bash, so a command with quotes or $ arrives as written
+    local script
+    script=$(printf 'set -e; d=/data/runs/%q; mkdir -p "$d"\n' "$id"
+             printf 'export NSF_REPO=%q NSF_REF=%q NSF_CMD=%q NSF_RUN_ID=%q NSF_DIR="$d" NSF_IMAGE="home:$(hostname)"\n' \
+                    "$repo" "$commit" "$cmd" "$id"
+             if [ "$wait" = 1 ]; then printf 'nsf-job 2>&1 | tee "$d.log"; exit ${PIPESTATUS[0]}\n'
+             else printf 'nohup nsf-job > "$d.log" 2>&1 < /dev/null &\necho "started (pid $!)"\n'; fi)
+    if in_lab; then bash -c "$script"; else ssh "$HOME_HOST" bash -s <<< "$script"; fi
+    local host="${HOME_HOST}:"; in_lab && host=""
+    echo "lab: run $id; results in ${host}/data/runs/$id/out/ (lab runs to check on it)"
+}
+
+run_gcp() {
+    local repo=$1 ref=$2 commit=$3 cmd=$4 cpu=$5 memory=$6 timeout=$7 name=$8 wait=$9 yes=${10}
+    command -v gcloud >/dev/null || die "no gcloud here"
+    gcp auth print-access-token >/dev/null 2>&1 || die "gcloud isn't logged in here: GCP runs are sent from the Mac (the lab has no GCP credentials, by design)"
+    name=$(echo "$name" | tr 'A-Z_.' 'a-z--' | tr -cd 'a-z0-9-' | cut -c1-49 | sed 's/-*$//')
+    local digest image
+    digest=$(gcp artifacts docker images describe "$IMAGE_REPO:latest" --format='value(image_summary.digest)' 2>/dev/null) \
+        || die "can't read $IMAGE_REPO:latest"
+    image="$IMAGE_REPO@$digest"
+    local env; env=$(mktemp)
+    # JSON is valid YAML, and json.dumps quotes anything a command can contain
+    NSF_REPO=$repo NSF_REF=$commit NSF_CMD=$cmd NSF_IMAGE=$image NSF_CPUS=$cpu python3 -c '
+import json, os
+print(json.dumps({k: os.environ[k] for k in ("NSF_REPO", "NSF_REF", "NSF_CMD", "NSF_IMAGE", "NSF_CPUS")} | {"NSF_BUCKET": "'"$BUCKET"'"}))' > "$env"
+    cat <<EOF
+  job      $name (created or updated in $PROJECT, $REGION)
+  image    ${image:0:60}… (latest, pinned by digest)
+  size     $cpu CPU, $memory, up to $timeout, no retries
+  results  $BUCKET/runs/<run id>/   and a message in #lab
+EOF
+    if [ "$yes" != 1 ]; then
+        [ -t 0 ] || die "a GCP run costs money and needs a yes: run it in a terminal, or pass --yes"
+        read -r -p "Run it in GCP? [y/N] " ok; [[ "$ok" =~ ^[yY] ]] || { rm -f "$env"; echo "lab: not run"; exit 1; }
+    fi
+    local flags=(--region="$REGION" --image="$image" --command=nsf-job --service-account="$RUNNER"
+                 --env-vars-file="$env" --set-secrets="DISCORD_WEBHOOK_URL=$WEBHOOK_SECRET:latest"
+                 --cpu="$cpu" --memory="$memory" --task-timeout="$timeout" --max-retries=0 --labels=nsf=lab)
+    local rc=0
+    if [ "$wait" = 1 ]; then gcp run jobs deploy "$name" "${flags[@]}" --wait --quiet || rc=$?
+    else gcp run jobs deploy "$name" "${flags[@]}" --execute-now --quiet || rc=$?; fi
+    rm -f "$env"
+    [ "$rc" = 0 ] || die "the job didn't start or didn't succeed (exit $rc): https://console.cloud.google.com/run/jobs/details/$REGION/$name/executions?project=$PROJECT"
+    echo "lab: sent. Results land in $BUCKET/runs/ (lab runs --where gcp); executions: https://console.cloud.google.com/run/jobs/details/$REGION/$name/executions?project=$PROJECT"
+}
+
+# ---------------------------------------------------------------- lab runs
+summarize() {  # JSON records on stdin (run.json files, concatenated), plus "RUNNING <id>" lines; newest first
+    python3 -c '
+import json, sys
+text, dec, rows = sys.stdin.read(), json.JSONDecoder(), []
+i = 0
+while i < len(text):
+    if text[i].isspace(): i += 1; continue
+    if text.startswith("RUNNING ", i):
+        end = text.find("\n", i); end = len(text) if end < 0 else end
+        rows.append({"run_id": text[i + 8:end].strip(), "running": True}); i = end; continue
+    r, i = dec.raw_decode(text, i); rows.append(r)
+for r in sorted(rows, key=lambda r: r["run_id"], reverse=True)[:int(sys.argv[1])]:
+    rid = r["run_id"]
+    if r.get("running"):
+        print("⏳ " + rid + "  running"); continue
+    ok, code, stage = r["exit_code"] == 0, r["exit_code"], r.get("failed_at")
+    m, s = divmod(r["seconds"], 60)
+    repo, commit, command = r["repo"].rstrip("/").split("/")[-1], r["commit"][:7], r["command"][:60]
+    mark = "✅" if ok else "❌"
+    tail = "" if ok else f"  (failed at {stage}, exit {code})"
+    print(f"{mark} {rid}  {m}m{s:02d}s  {repo}@{commit}  {command}{tail}")
+' "$1"
+}
+
+cmd_runs() {
+    local where=both n=10
+    while [ $# -gt 0 ]; do
+        case "$1" in --where) where=$2; shift 2 ;; -n) n=$2; shift 2 ;; -h|--help) usage ;; *) die "unknown option $1" ;; esac
+    done
+    if [ "$where" != gcp ]; then
+        if in_lab; then echo "home (/data/runs):"; else echo "home ($HOME_HOST:/data/runs):"; fi
+        local list='cd /data/runs 2>/dev/null || exit 0; for d in */; do d=${d%/}; if [ -f "$d/out/run.json" ]; then cat "$d/out/run.json"; echo; else echo "RUNNING $d"; fi; done'
+        { if in_lab; then bash -c "$list"; else ssh "$HOME_HOST" bash -c "$(printf %q "$list")"; fi; } | summarize "$n" | sed 's/^/  /'
+    fi
+    if [ "$where" != home ]; then
+        echo "gcp ($BUCKET/runs):"
+        if gcp auth print-access-token >/dev/null 2>&1; then
+            local paths; paths=$(gcp storage ls "$BUCKET/runs/" 2>/dev/null | sort -r | head -"$n" | sed 's#$#run.json#')
+            [ -z "$paths" ] || gcp storage cat $paths 2>/dev/null | summarize "$n" | sed 's/^/  /'
+        else echo "  (no GCP credentials here)"; fi
+    fi
+}
+
+case "${1:-help}" in
+    run) shift; cmd_run "$@" ;;
+    runs) shift; cmd_runs "$@" ;;
+    help|-h|--help) usage ;;
+    *) die "unknown command '$1' (lab help)" ;;
+esac

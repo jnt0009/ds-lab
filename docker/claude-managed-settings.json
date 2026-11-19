@@ -12,6 +12,8 @@
       "Bash(git push -f:*)",
       "Bash(gcloud run jobs execute:*)",
       "Bash(gcloud run jobs create:*)",
+      "Bash(gcloud run jobs deploy:*)",
+      "Bash(lab run --where gcp:*)",
       "Bash(gcloud compute instances create:*)"
     ]
   }

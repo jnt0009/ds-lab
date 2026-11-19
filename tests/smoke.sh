@@ -16,6 +16,7 @@ check "no secrets baked in" "! grep -qiE 'api_key|token|secret' /etc/environment
 check "no SSH host keys baked in" "! ls /etc/ssh/ssh_host_* 2>/dev/null"
 check "new repos start on main" "test \"$(git config --system init.defaultBranch)\" = main"
 check "nsf-job refuses to run without a repo and command, and records it" "rm -rf /work/out; ! NSF_REPO= NSF_CMD= nsf-job >/dev/null 2>&1 && python3 -c \"import json; r=json.load(open('/work/out/run.json')); assert r['exit_code']==2 and r['failed_at']=='setup', r\""
+check "lab is on the PATH and explains itself" "lab help | grep -q 'lab run' && ! lab run 2>/dev/null"
 check "the project template is in place" "test -f /opt/nsf/templates/project/CLAUDE.md && test -f /opt/nsf/templates/project/.gitignore"
 echo "--- versions"
 echo "R $(Rscript -e 'cat(as.character(getRversion()))'), $(/opt/venv/bin/python --version), $(claude --version 2>/dev/null), quarto $(quarto --version), $(uv --version), $(gcloud --version 2>/dev/null | head -1), $(uname -m)"

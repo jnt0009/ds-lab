@@ -86,7 +86,24 @@ with the command's code. `examples/hello-job/` is the first one (R and Python, a
 | Budget | $25 a month on `house-282504`: emails at 50%, 90%, 100% and a forecast 100% |
 | A GCP job | needs JT's OK first (it costs money); the lab's Claude Code is denied `gcloud run jobs create/execute` |
 
-By hand, until `lab run` exists (personal gcloud configuration; pin the image by digest so `run.json` is exact):
+### `lab run`: one command for home and GCP
+
+```sh
+lab run jnt0009/nba@main -- Rscript fit.R            # home: battlestation's lab, in the background
+lab run --wait -- python train.py                    # the repo you're in, at HEAD (clean and pushed), wait for it
+lab run --where gcp --cpu 4 --memory 16Gi --timeout 6h jnt0009/nba@v1 -- Rscript fit.R   # GCP: asks first
+lab runs                                             # recent runs, home and GCP, ✅ / ❌ / ⏳
+```
+
+It's in the image (`/usr/local/bin/lab`) and in this repo (`scripts/lab`, for the Mac: put it on your `PATH`). A ref
+is resolved to its commit before the run. Home runs go in `/data/runs/<run id>/` (`src/` the clone, `out/` the results,
+`<run id>.log` beside them), never in `/work`; from the Mac they go over `ssh lab` (`NSF_HOME_HOST` to change it). GCP
+runs create or update the Cloud Run Job `nsf-<repo>` on `latest` pinned by digest, and only work where the `nsf`
+gcloud configuration is logged in (the Mac): the lab has no GCP credentials, and its Claude Code is denied
+`lab run --where gcp` and `gcloud run jobs create/deploy/execute` as well. The command gets `$NSF_OUT` (write results
+there), `$NSF_CPUS` and `$NSF_RUN_ID`. A home run's Discord message needs `DISCORD_WEBHOOK_URL` in the lab's secrets.
+
+By hand, what `lab run --where gcp` does (personal gcloud configuration; pin the image by digest so `run.json` is exact):
 
 ```sh
 export CLOUDSDK_ACTIVE_CONFIG_NAME=nsf
@@ -102,4 +119,5 @@ the job's CPUs (an `NSF_CPUS` env var, or `nproc`), not from `cpu_count()` / `pa
 
 ## Still to come (see the plan)
 
-A VM in GCP for runs past Cloud Run's limits; a `lab run` command; private repos (a `GH_TOKEN` secret).
+A VM in GCP for runs past Cloud Run's limits (24 h, 8 CPUs, 32 GiB); private repos (a `GH_TOKEN` secret); an agent's
+GCP run waiting for JT's OK in Discord.
