@@ -1,0 +1,97 @@
+#!/bin/bash
+# nsf-job: one batch run of a project at a commit. The image's command for a Cloud Run Job (its entrypoint stays sshd
+# for the labs). Plan: home-lab's docs/ds-lab-plan.md, step 4.
+#
+#   NSF_REPO     the git repo to clone (https; a public repo, or GH_TOKEN for a private one)      required
+#   NSF_REF      the commit, branch or tag to run                                                 default: the default branch
+#   NSF_CMD      the command, run with bash in the repo's folder                                  required
+#   NSF_BUCKET   where results go, e.g. gs://house-282504-nsf (empty: keep them in /work/out)
+#   NSF_IMAGE    the image digest it ran on (set by whoever submits the job; recorded, not used)
+#   DISCORD_WEBHOOK_URL   where the finished message goes (empty: no message)
+#
+# The command writes whatever it wants kept to $NSF_OUT. That folder, plus job.log (everything the command printed) and
+# run.json (what ran: repo, commit, command, image, times, exit code), is copied to $NSF_BUCKET/runs/<run id>/.
+# The job exits with the command's exit code, so Cloud Run marks a failed command as a failed execution.
+set -uo pipefail
+export PATH="/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" LANG=en_US.UTF-8
+
+NSF_REF=${NSF_REF:-}
+NSF_BUCKET=${NSF_BUCKET:-}
+NSF_IMAGE=${NSF_IMAGE:-unknown}
+DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+EXECUTION=${CLOUD_RUN_EXECUTION:-local}
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-${EXECUTION}"
+export NSF_OUT=/work/out NSF_RUN_ID="$RUN_ID"
+SRC=/work/job
+STARTED=$(date -u +%FT%TZ); T0=$(date +%s)
+COMMIT=""; CODE=1; STAGE="setup"
+mkdir -p "$NSF_OUT"
+LOG="$NSF_OUT/job.log"
+
+say() { echo "[nsf-job] $*" | tee -a "$LOG"; }
+
+finish() {
+    local secs=$(( $(date +%s) - T0 )) where="$NSF_OUT" results=""
+    # run.json: what ran, so a result can be reproduced (python for the JSON escaping)
+    NSF_STARTED="$STARTED" NSF_SECS="$secs" NSF_CODE="$CODE" NSF_STAGE="$STAGE" NSF_COMMIT="$COMMIT" NSF_EXECUTION="$EXECUTION" \
+    python3 - > "$NSF_OUT/run.json" <<'PY'
+import json, os
+e = os.environ
+print(json.dumps({
+    "run_id": e["NSF_RUN_ID"], "repo": e.get("NSF_REPO", ""), "ref": e.get("NSF_REF", ""), "commit": e["NSF_COMMIT"],
+    "command": e.get("NSF_CMD", ""), "image": e.get("NSF_IMAGE", "unknown"), "execution": e["NSF_EXECUTION"],
+    "started": e["NSF_STARTED"], "seconds": int(e["NSF_SECS"]), "exit_code": int(e["NSF_CODE"]),
+    "failed_at": None if e["NSF_CODE"] == "0" else e["NSF_STAGE"]}, indent=2))
+PY
+    if [ -n "$NSF_BUCKET" ]; then
+        where="${NSF_BUCKET%/}/runs/$RUN_ID/"
+        if gcloud storage cp -r "$NSF_OUT/*" "$where" >/dev/null 2>>"$LOG"; then
+            local b=${NSF_BUCKET#gs://}; b=${b%/}
+            results="https://console.cloud.google.com/storage/browser/$b/runs/$RUN_ID"
+        else
+            say "could not copy results to $where"; where="(upload failed: see the execution's logs)"
+        fi
+    fi
+    if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+        NSF_SECS="$secs" NSF_CODE="$CODE" NSF_STAGE="$STAGE" NSF_COMMIT="$COMMIT" NSF_WHERE="$where" NSF_RESULTS="$results" \
+        NSF_EXECUTION="$EXECUTION" NSF_LOG="$LOG" python3 - <<'PY' || echo "[nsf-job] the Discord message failed" >&2
+import json, os, urllib.request
+e = os.environ
+ok = e["NSF_CODE"] == "0"
+m, s = divmod(int(e["NSF_SECS"]), 60)
+repo = e.get("NSF_REPO", "").rstrip("/").removesuffix(".git").split("github.com/")[-1]
+lines = [f"{'✅' if ok else '❌'} **NSF job** `{e['NSF_RUN_ID']}` "
+         + ("finished" if ok else f"failed ({e['NSF_STAGE']}, exit {e['NSF_CODE']})") + f" in {m}m {s}s",
+         f"`{repo}` @ `{e['NSF_COMMIT'][:12] or e.get('NSF_REF', '') or '?'}`: `{e.get('NSF_CMD', '')[:200]}`",
+         f"Results: {e['NSF_RESULTS'] or e['NSF_WHERE']}"]
+if e["NSF_EXECUTION"] != "local":
+    lines.append(f"Logs: https://console.cloud.google.com/run/jobs/executions/details/us-east1/{e['NSF_EXECUTION']}/logs?project=house-282504")
+if not ok:
+    tail = open(e["NSF_LOG"], encoding="utf-8", errors="replace").read()[-700:]
+    lines.append("```\n" + tail.replace("```", "'''") + "\n```")
+body = json.dumps({"content": "\n".join(lines)[:1990], "allowed_mentions": {"parse": []}}).encode()
+req = urllib.request.Request(e["DISCORD_WEBHOOK_URL"], body, {"Content-Type": "application/json", "User-Agent": "nsf-job"})
+urllib.request.urlopen(req, timeout=20).read()
+PY
+    fi
+    say "done: exit $CODE in ${secs}s; results in $where"
+    exit "$CODE"
+}
+trap finish EXIT
+
+[ -n "${NSF_REPO:-}" ] && [ -n "${NSF_CMD:-}" ] || { say "NSF_REPO and NSF_CMD are required"; CODE=2; exit; }
+
+STAGE="clone"
+URL="$NSF_REPO"
+[ -n "${GH_TOKEN:-}" ] && URL=$(echo "$NSF_REPO" | sed "s#^https://#https://x-access-token:${GH_TOKEN}@#")
+say "cloning $NSF_REPO${NSF_REF:+ at $NSF_REF}"
+git clone --quiet --filter=blob:none "$URL" "$SRC" 2>>"$LOG" || { say "clone failed"; exit; }
+cd "$SRC" || exit
+if [ -n "$NSF_REF" ]; then git -c advice.detachedHead=false checkout --quiet "$NSF_REF" 2>>"$LOG" || { say "no ref $NSF_REF"; exit; }; fi
+COMMIT=$(git rev-parse HEAD)
+git remote set-url origin "$NSF_REPO"   # the token never stays in the clone
+
+STAGE="command"
+say "running at ${COMMIT:0:12}: $NSF_CMD"
+bash -c "$NSF_CMD" 2>&1 | tee -a "$LOG"
+CODE=${PIPESTATUS[0]}
