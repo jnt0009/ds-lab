@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # The National Science Foundation's base image: one data science environment for the Mac, battlestation and GCP.
 # R and Python, reached by Positron over SSH; Claude Code for agents. No projects, data or secrets in it: projects are
 # git repos cloned into /work, data lives in /data, keys arrive at run time (docker/entrypoint.sh).
@@ -38,9 +39,12 @@ RUN install -d -m 0755 /etc/apt/keyrings \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Quarto and uv, pinned ---
-RUN curl -fsSL -o /tmp/quarto.deb \
+# downloaded into a build cache that outlives the layer, resuming a partial download (GitHub's downloads can crawl)
+RUN --mount=type=cache,target=/var/cache/nsf-downloads \
+    f=/var/cache/nsf-downloads/quarto-${QUARTO_VERSION}-linux-${TARGETARCH}.deb \
+    && curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 -C - -o "$f" \
         "https://github.com/quarto-dev/quarto-cli/releases/download/v${QUARTO_VERSION}/quarto-${QUARTO_VERSION}-linux-${TARGETARCH}.deb" \
-    && apt-get install -y /tmp/quarto.deb && rm /tmp/quarto.deb
+    && apt-get install -y "$f"
 COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /uvx /usr/local/bin/
 
 # --- R packages: binaries from the CRAN snapshot (r/packages.R lists them and writes what it installed) ---
@@ -56,6 +60,7 @@ RUN cd /opt/nsf/python && uv venv --python /usr/bin/python3 /opt/venv && uv sync
 # --- the user, sshd and the agents' settings ---
 RUN useradd -m -s /bin/bash "${NSF_USER}" \
     && mkdir -p /run/sshd /work /data && chown "${NSF_USER}:${NSF_USER}" /work /data \
+    && git config --system init.defaultBranch main && git config --system pull.ff only \
     && rm -f /etc/ssh/ssh_host_*   # no host keys in the image: each lab makes its own on first start (entrypoint)
 COPY docker/sshd_nsf.conf /etc/ssh/sshd_config.d/nsf.conf
 COPY docker/environment /etc/environment

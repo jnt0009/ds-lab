@@ -14,6 +14,7 @@ check "Claude Code runs, auto-update off, pushes to main denied" "claude --versi
 check "Quarto, uv, gcloud, git run" "quarto --version && uv --version && gcloud --version >/dev/null && git --version"
 check "no secrets baked in" "! grep -qiE 'api_key|token|secret' /etc/environment"
 check "no SSH host keys baked in" "! ls /etc/ssh/ssh_host_* 2>/dev/null"
+check "new repos start on main" "test \"$(git config --system init.defaultBranch)\" = main"
 check "the project template is in place" "test -f /opt/nsf/templates/project/CLAUDE.md && test -f /opt/nsf/templates/project/.gitignore"
 echo "--- versions"
 echo "R $(Rscript -e 'cat(as.character(getRversion()))'), $(/opt/venv/bin/python --version), $(claude --version 2>/dev/null), quarto $(quarto --version), $(uv --version), $(gcloud --version 2>/dev/null | head -1), $(uname -m)"

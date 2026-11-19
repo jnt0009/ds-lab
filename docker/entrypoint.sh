@@ -19,6 +19,11 @@ if [ -f /run/nsf/secrets.env ]; then
     grep -E '^[A-Za-z_][A-Za-z0-9_]*=' /run/nsf/secrets.env >> /etc/environment
 fi
 chown root:"$U" /etc/environment && chmod 640 /etc/environment
+# who the lab's commits are by: NSF_GIT_NAME / NSF_GIT_EMAIL from the secrets, set once (edit ~/.gitconfig after)
+GN=$(sed -n 's/^NSF_GIT_NAME=//p' /etc/environment | tail -1 | tr -d '"'); GE=$(sed -n 's/^NSF_GIT_EMAIL=//p' /etc/environment | tail -1 | tr -d '"')
+if [ -n "$GE" ] && ! su -s /bin/sh "$U" -c 'git config --global user.email' >/dev/null 2>&1; then
+    su -s /bin/sh "$U" -c "git config --global user.name \"${GN:-$U}\" && git config --global user.email \"$GE\""
+fi
 # the lab's host identity: made on its first start and kept in the home volume, so it survives rebuilds (Positron
 # never sees "host identification changed") and is never in the image, where anyone who pulls it could copy it
 KEEP="/home/$U/.nsf-hostkeys"
