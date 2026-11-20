@@ -10,9 +10,12 @@ U=__NSF_USER__
 install -d -m 700 -o "$U" -g "$U" "/home/$U/.ssh"
 install -m 600 -o "$U" -g "$U" /run/nsf/authorized_keys "/home/$U/.ssh/authorized_keys"
 # a fresh home volume gets the lab's starting files once
-[ -f "/home/$U/.nsf-welcome" ] || { cp /opt/nsf/templates/home/.bashrc_nsf "/home/$U/.bashrc_nsf" 2>/dev/null || true
+# .bashrc_nsf is the lab's, not JT's: refreshed from the image on every start, so a new image's shell functions
+# (nsf-new) reach labs whose home volume already exists. Your own settings go in ~/.bashrc, which is only hooked once.
+install -m 644 -o "$U" -g "$U" /opt/nsf/templates/home/.bashrc_nsf "/home/$U/.bashrc_nsf" 2>/dev/null || true
+[ -f "/home/$U/.nsf-welcome" ] || {
     grep -q bashrc_nsf "/home/$U/.bashrc" 2>/dev/null || echo '[ -f ~/.bashrc_nsf ] && . ~/.bashrc_nsf' >> "/home/$U/.bashrc"
-    date -u +%FT%TZ > "/home/$U/.nsf-welcome"; chown "$U:$U" "/home/$U/.bashrc_nsf" "/home/$U/.bashrc" "/home/$U/.nsf-welcome" 2>/dev/null || true; }
+    date -u +%FT%TZ > "/home/$U/.nsf-welcome"; chown "$U:$U" "/home/$U/.bashrc" "/home/$U/.nsf-welcome" 2>/dev/null || true; }
 # secrets: the image's /etc/environment, plus the mounted ones, readable by root and the lab user only
 cp /etc/environment.nsf /etc/environment 2>/dev/null || cp /etc/environment /etc/environment.nsf
 if [ -f /run/nsf/secrets.env ]; then

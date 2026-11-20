@@ -1,14 +1,19 @@
-# The NSF's shell additions (copied once into a new home; edit freely).
+# The NSF's shell additions. The lab's, not yours: replaced from the image on every start (your own go in ~/.bashrc).
 export EDITOR=nano
 alias ll='ls -lah'
-cd /work 2>/dev/null || true
+# a fresh login lands in /work; a shell opened somewhere on purpose (Positron's terminal in a project) stays there
+[ "$PWD" = "$HOME" ] && cd /work 2>/dev/null
 cat <<'WELCOME'
 National Science Foundation lab. Projects: /work (git clone here). Data: /data.
   Positron: R and Python (NSF) consoles · claude: Claude Code · quarto · uv · gcloud
-  New project: nsf-new <name>   (a CLAUDE.md and .gitignore for the lab's conventions)
+  New project: nsf-new <name>   (inside /work/nsf-adhoc: the next numbered project; elsewhere: its own repo)
 WELCOME
 nsf-new() {
     [ -n "$1" ] || { echo "usage: nsf-new <name>"; return 1; }
+    # inside a projects repo (nsf-adhoc): its own script numbers the project and adds the index row
+    local root; root=$(git rev-parse --show-toplevel 2>/dev/null)
+    if [ -n "$root" ] && [ -x "$root/scripts/new-project" ]; then "$root/scripts/new-project" "$1"; return; fi
+    # anywhere else: a project of its own, as its own repo (a project that graduates, or a one-off)
     mkdir -p "/work/$1" && cd "/work/$1" && git init -q 2>/dev/null
-    cp -n /opt/nsf/templates/project/CLAUDE.md /opt/nsf/templates/project/.gitignore . && echo "made /work/$1"
+    for f in CLAUDE.md .gitignore; do [ -e "$f" ] || cp "/opt/nsf/templates/project/$f" .; done && echo "made /work/$1"
 }
