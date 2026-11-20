@@ -61,6 +61,8 @@ RUN cd /opt/nsf/python && uv venv --python /usr/bin/python3 /opt/venv && uv sync
 RUN useradd -m -s /bin/bash "${NSF_USER}" \
     && mkdir -p /run/sshd /work /data && chown "${NSF_USER}:${NSF_USER}" /work /data \
     && git config --system init.defaultBranch main && git config --system pull.ff only \
+    && git config --system credential.https://github.com.helper \
+        '!f() { [ "$1" = get ] && [ -n "$GH_TOKEN" ] && printf "username=x-access-token\npassword=%s\n" "$GH_TOKEN"; }; f' \
     && rm -f /etc/ssh/ssh_host_*   # no host keys in the image: each lab makes its own on first start (entrypoint)
 COPY docker/sshd_nsf.conf /etc/ssh/sshd_config.d/nsf.conf
 COPY docker/environment /etc/environment
